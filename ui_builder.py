@@ -251,3 +251,39 @@ def create_stats_bar(parent):
         stats_labels[key].pack(side=tk.LEFT, padx=(3, 0))
     
     return stats_labels
+
+def create_dev_badge(parent, dev_image=None):
+    """
+    Создает значок разработчика (20x20)
+    
+    Args:
+        parent: Родительский виджет
+        dev_image: Изображение для значка разработчика
+    
+    Returns:
+        ttk.Frame: Фрейм со значком разработчика
+    """
+    badge_frame = ttk.Frame(parent, style='Primary.TFrame')
+    
+    if dev_image:
+        badge_label = tk.Label(
+            badge_frame,
+            image=dev_image,
+            bg='#0a0e17',
+            borderwidth=0,
+            width=20,
+            height=20
+        )
+        badge_label.pack(side=tk.LEFT, padx=(0, 3))
+    else:
+        # Запасной вариант - эмодзи
+        badge_label = tk.Label(
+            badge_frame,
+            text="⚡",
+            font=('Segoe UI', 14),
+            bg='#0a0e17',
+            fg='#4f8cf7'
+        )
+        badge_label.pack(side=tk.LEFT, padx=(0, 3))
+    
+    return badge_frame

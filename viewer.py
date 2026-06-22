@@ -10,6 +10,7 @@ import sys
 from collections import defaultdict
 import base64
 from io import BytesIO
+import threading
 
 try:
     from PIL import Image, ImageTk
@@ -17,10 +18,11 @@ try:
 except ImportError:
     HAS_PIL = False
 
-from logo import LOGO_BASE64
+from logo import LOGO_BASE64, LOGO_DEVELOPER
 from excel_utils import save_excel_with_raw_char
 from csv_utils import read_csv_with_encoding, save_csv_with_crlf
 import ui_builder
+import single_instance
 
 
 def get_logo_image():
@@ -38,16 +40,50 @@ def get_logo_image():
         print(f"Ошибка загрузки логотипа: {e}")
         return None
 
+def get_dev_logo():
+    """Загружает логотип разработчика из встроенного base64"""
+    if not HAS_PIL:
+        return None
+    
+    try:
+        logo_data = LOGO_DEVELOPER.strip()
+        if not logo_data:
+            print("LOGO_DEVELOPER пуст")
+            return None
+        
+        # Декодируем base64
+        image_data = base64.b64decode(logo_data)
+        
+        # Открываем изображение
+        image = Image.open(BytesIO(image_data))
+        
+        # Ресайзим до 20x20
+        image = image.resize((20, 20), Image.Resampling.LANCZOS)
+        
+        # Конвертируем в PhotoImage для Tkinter
+        return ImageTk.PhotoImage(image)
+    except Exception as e:
+        print(f"Ошибка загрузки логотипа разработчика: {e}")
+        # Если не получилось, создаем простой значок-заглушку
+        try:
+            from PIL import ImageDraw
+            img = Image.new('RGBA', (20, 20), (79, 140, 247, 255))
+            draw = ImageDraw.Draw(img)
+            draw.text((4, 0), "Л", fill='white')
+            return ImageTk.PhotoImage(img)
+        except:
+            return None
 
 class DataMatrixCSVViewer:
     """Главный класс приложения"""
     
-    def __init__(self, root):
+    def __init__(self, root, initial_file=None):
         self.root = root
         self.root.title("DataMatrix CSV Viewer Pro")
         self.root.geometry("1200x850")
         self.root.configure(bg='#0a0e17')
         self.root.minsize(800, 600)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         # Данные
         self.current_file = None
@@ -56,9 +92,11 @@ class DataMatrixCSVViewer:
         self.special_chars_info = {}
         self.filtered_data = []
         self.filter_mode = False
+        self.is_closing = False
         
-        # Загружаем логотип
+        # Загружаем логотипы
         self.logo_image = get_logo_image()
+        self.dev_logo = get_dev_logo()
         
         # Настройка UI
         ui_builder.setup_styles(root)
@@ -69,6 +107,66 @@ class DataMatrixCSVViewer:
         
         # Создаем контекстное меню
         self.create_context_menu()
+        
+        # Запускаем сервер для единственного экземпляра
+        self.start_single_instance_server()
+        
+        # Если передан файл - открываем его
+        if initial_file and os.path.exists(initial_file):
+            self.root.after(100, lambda: self.open_file(initial_file))
+    
+    def start_single_instance_server(self):
+        """Запускает сервер для обработки команд из других экземпляров"""
+        def server_thread():
+            single_instance.start_server(self.handle_remote_command)
+        
+        thread = threading.Thread(target=server_thread, daemon=True)
+        thread.start()
+    
+    def handle_remote_command(self, file_path):
+        """Обрабатывает команду от другого экземпляра"""
+        def open_file():
+            if os.path.exists(file_path):
+                self.open_file(file_path)
+                self.root.deiconify()
+                self.root.lift()
+                self.root.focus_force()
+        
+        self.root.after(100, open_file)
+    
+    def on_closing(self):
+        """Обработчик закрытия окна"""
+        self.is_closing = True
+        self.root.destroy()
+    
+    def open_file(self, file_path):
+        """Открывает файл (используется для внешних вызовов)"""
+        if not os.path.exists(file_path):
+            return
+        
+        try:
+            self.current_file = file_path
+            self.update_status(f"📖 Чтение файла: {os.path.basename(file_path)}")
+            self.root.update()
+            
+            self.data, used_encoding = read_csv_with_encoding(file_path)
+            
+            self.display_data()
+            self.update_stats()
+            self.stats_labels['file'].config(text=os.path.basename(file_path))
+            self.encoding_label.config(text=f"Кодировка: {used_encoding}")
+            
+            special_count = len(self.special_rows)
+            if special_count > 0:
+                self.update_status(f"✅ Загружено {len(self.data)} записей, ⚠️ {special_count} строк с особыми символами")
+            else:
+                self.update_status(f"✅ Загружено {len(self.data)} записей, особых символов нет")
+            
+            self.root.title(f"DataMatrix CSV Viewer Pro - {os.path.basename(file_path)}")
+            
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось открыть файл:\n{str(e)}")
+            self.update_status("❌ Ошибка загрузки")
     
     def setup_hotkeys(self):
         """Настройка горячих клавиш"""
@@ -85,10 +183,8 @@ class DataMatrixCSVViewer:
         main_frame = ttk.Frame(self.root, style='Primary.TFrame')
         main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
         
-        # Заголовок
         ui_builder.create_header(main_frame, self.logo_image)
         
-        # Панель инструментов
         commands = {
             'open': self.open_csv,
             'save_excel': self.save_as_excel,
@@ -101,13 +197,10 @@ class DataMatrixCSVViewer:
         self.filter_var, self.filter_entry = ui_builder.create_toolbar(main_frame, commands)
         self.filter_var.trace('w', self.apply_filter)
         
-        # Статистика
         self.stats_labels = ui_builder.create_stats_bar(main_frame)
         
-        # Основная область
         self.create_main_area(main_frame)
         
-        # Нижняя панель
         self.create_footer(main_frame)
     
     def create_main_area(self, parent):
@@ -138,13 +231,11 @@ class DataMatrixCSVViewer:
             maxundo=0
         )
         
-        # Отключаем проверку орфографии
         try:
             self.text_widget.tk.call('tk_getOpenFile', '-nospellcheck', '1')
         except:
             pass
         
-        # Скроллбары
         vsb = ttk.Scrollbar(text_frame, orient="vertical", command=self.text_widget.yview)
         hsb = ttk.Scrollbar(text_frame, orient="horizontal", command=self.text_widget.xview)
         self.text_widget.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -156,10 +247,8 @@ class DataMatrixCSVViewer:
         text_frame.grid_rowconfigure(0, weight=1)
         text_frame.grid_columnconfigure(0, weight=1)
         
-        # Настройка тегов для подсветки
         self.setup_text_tags()
         
-        # Двойной клик для просмотра информации
         self.text_widget.bind('<Double-1>', self.on_double_click)
     
     def setup_text_tags(self):
@@ -209,7 +298,7 @@ class DataMatrixCSVViewer:
         self.context_menu.post(event.x_root, event.y_root)
     
     def create_footer(self, parent):
-        """Создание нижней панели"""
+        """Создание нижней панели с логотипом разработчика"""
         footer = ttk.Frame(parent, style='Primary.TFrame')
         footer.pack(fill=tk.X, pady=(10, 0))
         
@@ -222,31 +311,69 @@ class DataMatrixCSVViewer:
         dev_frame = ttk.Frame(footer, style='Primary.TFrame')
         dev_frame.pack(side=tk.RIGHT)
         
-        developers = [
-            ("👨‍💻 Лев Бутаков", '#4f8cf7'),
-            ("🤖 AI Assistant", '#ff6b6b')
-        ]
+        # Логотип разработчика
+        if self.dev_logo:
+            dev_badge = tk.Label(
+                dev_frame,
+                image=self.dev_logo,
+                bg='#0a0e17',
+                borderwidth=0
+            )
+            dev_badge.pack(side=tk.LEFT, padx=(0, 3))
+        else:
+            # Запасной вариант - эмодзи
+            dev_badge = tk.Label(
+                dev_frame,
+                text="⚡",
+                font=('Segoe UI', 12),
+                bg='#0a0e17',
+                fg='#4f8cf7'
+            )
+            dev_badge.pack(side=tk.LEFT, padx=(0, 2))
         
-        for i, (name, color) in enumerate(developers):
-            if i > 0:
-                ttk.Label(dev_frame, text="|", style='Info.TLabel').pack(side=tk.LEFT, padx=5)
-            
-            label = ttk.Label(dev_frame, 
-                text=name,
-                style='Info.TLabel',
-                font=('Segoe UI', 8, 'italic'))
-            label.pack(side=tk.LEFT)
-            label.configure(foreground=color)
+        # Имя разработчика
+        dev_name = ttk.Label(
+            dev_frame,
+            text="Лев Бутаков",
+            style='Info.TLabel',
+            font=('Segoe UI', 8, 'italic'),
+            foreground='#4f8cf7'
+        )
+        dev_name.pack(side=tk.LEFT)
         
-        ttk.Label(dev_frame, text="| v2.0", style='Info.TLabel', 
-                 font=('Segoe UI', 8)).pack(side=tk.LEFT, padx=5)
+        # Разделитель
+        sep = ttk.Label(dev_frame, text="|", style='Info.TLabel')
+        sep.pack(side=tk.LEFT, padx=5)
+        
+        # AI Assistant
+        ai_name = ttk.Label(
+            dev_frame,
+            text="AI Assistant",
+            style='Info.TLabel',
+            font=('Segoe UI', 8, 'italic'),
+            foreground='#ff6b6b'
+        )
+        ai_name.pack(side=tk.LEFT)
+        
+        # Версия
+        version = ttk.Label(
+            dev_frame,
+            text="| v2.0",
+            style='Info.TLabel',
+            font=('Segoe UI', 8)
+        )
+        version.pack(side=tk.LEFT, padx=5)
         
         self.encoding_label = ttk.Label(footer,
             text="",
             style='Info.TLabel')
         self.encoding_label.pack(side=tk.RIGHT, padx=(10, 0))
-    
-    # ============ ОСНОВНЫЕ МЕТОДЫ ============
+        
+    # ============ ОСТАЛЬНЫЕ МЕТОДЫ ============
+    # Здесь должны быть все остальные методы из вашего файла
+    # (open_csv, display_data, split_by_code, save_as_excel, copy_selected, 
+    # find_special_char, on_double_click, apply_filter, clear_filter, 
+    # clear_all и т.д.)
     
     def open_csv(self):
         """Открытие CSV файла"""
@@ -263,10 +390,8 @@ class DataMatrixCSVViewer:
             self.update_status(f"📖 Чтение файла: {os.path.basename(file_path)}")
             self.root.update()
             
-            # Читаем файл с определением кодировки
             self.data, used_encoding = read_csv_with_encoding(file_path)
             
-            # Отображаем данные
             self.display_data()
             self.update_stats()
             self.stats_labels['file'].config(text=os.path.basename(file_path))
@@ -321,11 +446,11 @@ class DataMatrixCSVViewer:
         special_chars = []
         for i, char in enumerate(line):
             code = ord(char)
-            if code < 32 and code not in [9, 10, 13]:  # Управляющие символы
+            if code < 32 and code not in [9, 10, 13]:
                 special_chars.append((i, char, code, 'control'))
-            elif code == 127:  # DELETE
+            elif code == 127:
                 special_chars.append((i, char, code, 'del'))
-            elif code > 127 and not char.isprintable():  # Непечатаемые Unicode
+            elif code > 127 and not char.isprintable():
                 special_chars.append((i, char, code, 'unicode'))
         return special_chars
     
@@ -355,10 +480,6 @@ class DataMatrixCSVViewer:
         
         self.text_widget.insert(tk.END, '\n')
     
-    def has_special_char(self, text):
-        """Проверяет наличие особых символов в строке"""
-        return bool(self.find_special_chars_in_line(text))
-    
     def update_stats(self):
         """Обновление статистики"""
         total = len(self.data)
@@ -377,18 +498,12 @@ class DataMatrixCSVViewer:
         self.status_label.config(text=message)
         self.root.update_idletasks()
     
-    # ============ ОСНОВНЫЕ ФУНКЦИИ ============
-    
     def split_by_code(self):
-        """
-        Разбивка файла по кодам Data Matrix
-        Извлекает код из строк и группирует строки по кодам
-        """
+        """Разбивка файла по кодам Data Matrix"""
         if not self.data:
             messagebox.showwarning("Предупреждение", "Сначала загрузите CSV файл")
             return
         
-        # Спрашиваем формат
         format_choice = messagebox.askquestion(
             "Выбор формата",
             "Сохранять в формате Excel (.xlsx)?\n\n"
@@ -397,7 +512,6 @@ class DataMatrixCSVViewer:
         )
         use_excel = format_choice == 'yes'
         
-        # Выбираем папку
         output_dir = filedialog.askdirectory(
             title="Выберите папку для сохранения разбитых файлов"
         )
@@ -409,14 +523,12 @@ class DataMatrixCSVViewer:
             self.update_status("🔀 Выполняется разбивка по кодам...")
             self.root.update()
             
-            # Поиск кода Data Matrix
             pattern = re.compile(r"010468101320(\d{7})")
             
             groups = defaultdict(list)
             errors = 0
             
             for line in self.data:
-                # Ищем код, но не очищаем строку (сохраняем 0x1D)
                 match = pattern.search(line)
                 if match:
                     code = match.group(1)
@@ -424,14 +536,12 @@ class DataMatrixCSVViewer:
                 else:
                     errors += 1
             
-            # Создаём папку для результатов
             split_dir = os.path.join(output_dir, "split_files")
             os.makedirs(split_dir, exist_ok=True)
             
             saved_files = []
             
             if use_excel:
-                # Сохраняем в Excel с сохранением 0x1D
                 try:
                     from openpyxl import Workbook
                     from openpyxl.styles import Font
@@ -441,21 +551,17 @@ class DataMatrixCSVViewer:
                     for code, lines in groups.items():
                         file_path = os.path.join(split_dir, f"codes_{code}.xlsx")
                         
-                        # Создаём временный файл
                         temp_file = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
                         temp_path = temp_file.name
                         temp_file.close()
                         
-                        # Создаём Excel
                         wb = Workbook()
                         ws = wb.active
                         ws.title = f"Code_{code}"[:31]
                         
-                        # Заголовок
                         ws['A1'] = f"DataMatrix Коды - {code}"
                         ws['A1'].font = Font(bold=True, size=12)
                         
-                        # Записываем данные с заменой 0x1D на маркер
                         GS_MARKER = '###GS_MARKER###'
                         for i, line in enumerate(lines, 2):
                             temp_line = line.replace(chr(0x1D), GS_MARKER)
@@ -465,7 +571,6 @@ class DataMatrixCSVViewer:
                         wb.save(temp_path)
                         wb.close()
                         
-                        # Заменяем маркер на 0x1D в XML
                         with zipfile.ZipFile(temp_path, 'r') as zip_in:
                             with zipfile.ZipFile(file_path, 'w', zipfile.ZIP_DEFLATED) as zip_out:
                                 for item in zip_in.infolist():
@@ -486,13 +591,11 @@ class DataMatrixCSVViewer:
                     use_excel = False
             
             if not use_excel:
-                # Сохраняем в CSV
                 for code, lines in groups.items():
                     file_path = os.path.join(split_dir, f"codes_{code}.csv")
                     
                     with open(file_path, 'w', encoding='utf-8-sig', newline='') as f:
                         for line in lines:
-                            # Очищаем от проблемных символов, но сохраняем 0x1D
                             cleaned = []
                             for char in line:
                                 code_ord = ord(char)
@@ -505,7 +608,6 @@ class DataMatrixCSVViewer:
                             
                             clean_line = ''.join(cleaned)
                             
-                            # Экранируем для CSV
                             if '"' in clean_line or ',' in clean_line or '\n' in clean_line:
                                 clean_line = '"' + clean_line.replace('"', '""') + '"'
                             
@@ -513,7 +615,6 @@ class DataMatrixCSVViewer:
                     
                     saved_files.append((code, len(lines), file_path))
             
-            # Показываем результат
             result_text = self.build_result_message(groups, errors, saved_files, use_excel)
             messagebox.showinfo("Разбивка завершена", result_text)
             
@@ -584,8 +685,7 @@ class DataMatrixCSVViewer:
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось сохранить файл:\n{str(e)}")
             self.update_status("❌ Ошибка сохранения")
-
-
+    
     def save_as_csv(self):
         """Сохранение в CSV с Windows окончаниями строк"""
         if not self.data:
@@ -611,8 +711,6 @@ class DataMatrixCSVViewer:
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось сохранить файл:\n{str(e)}")
     
-    # ============ ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ============
-    
     def copy_selected(self):
         """Копирование выделенного текста"""
         try:
@@ -623,7 +721,6 @@ class DataMatrixCSVViewer:
                 lines = len(selected.split(chr(10)))
                 self.update_status(f"📋 Скопировано {lines} строк")
         except tk.TclError:
-            # Если ничего не выделено, копируем текущую строку
             try:
                 cursor_pos = self.text_widget.index(tk.INSERT)
                 line_start = f"{cursor_pos.split('.')[0]}.0"
@@ -664,7 +761,6 @@ class DataMatrixCSVViewer:
             messagebox.showinfo("✅ Отлично!", "Особые символы не обнаружены")
             return
         
-        # Создаём диалог с результатами
         dialog = tk.Toplevel(self.root)
         dialog.title("🔍 Найденные особые символы")
         dialog.geometry("800x600")
@@ -747,7 +843,7 @@ class DataMatrixCSVViewer:
                   style='Accent.TButton').pack(side=tk.RIGHT, padx=3)
     
     def on_double_click(self, event):
-        """Обработчик двойного клика - показывает информацию о строке"""
+        """Обработчик двойного клика"""
         try:
             index = self.text_widget.index(tk.CURRENT)
             line_num = int(index.split('.')[0])
@@ -807,45 +903,9 @@ class DataMatrixCSVViewer:
         self.update_status("✅ Фильтр сброшен")
     
     def find_shortcut(self, event):
-        """Обработчик Ctrl+F - фокус на поле фильтра"""
+        """Обработчик Ctrl+F"""
         self.filter_entry.focus()
         return "break"
-    
-    def clean_for_csv(self, text):
-        """
-        Очищает строку для CSV, удаляя проблемные управляющие символы
-        Сохраняет только: печатаемые ASCII, 0x1D, табуляцию, CR, LF
-        """
-        if not text:
-            return text
-        
-        cleaned = []
-        for char in text:
-            code = ord(char)
-            # Разрешаем: печатаемые ASCII, 0x1D, табуляция, CR, LF
-            if (32 <= code <= 126) or code == 0x1D or code in [9, 10, 13]:
-                cleaned.append(char)
-            else:
-                cleaned.append(' ')
-        
-        return ''.join(cleaned)
-    
-    def escape_csv_field(self, field):
-        """
-        Экранирует поле CSV для совместимости с OpenLabel
-        """
-        if not field:
-            return field
-        
-        # Проверяем нужно ли экранирование
-        needs_quoting = any(c in field for c in ['"', ',', '\n', '\r']) or ' ' in field
-        
-        if needs_quoting:
-            # Экранируем кавычки
-            field = field.replace('"', '""')
-            field = f'"{field}"'
-        
-        return field
     
     def clear_all(self):
         """Очистка всех данных"""
