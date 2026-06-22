@@ -38,15 +38,15 @@ def save_excel_with_raw_char(file_path, data, sheet_name="DataMatrix"):
         ws = wb.active
         ws.title = sheet_name[:31]
         
-        # Заголовок
-        ws['A1'] = "DataMatrix Коды"
-        ws['A1'].font = Font(bold=True, size=12)
-        ws['A1'].alignment = Alignment(horizontal='center')
-        ws.merge_cells('A1:A1')
+        # # Заголовок
+        # ws['A1'] = "DataMatrix Коды"
+        # ws['A1'].font = Font(bold=True, size=12)
+        # ws['A1'].alignment = Alignment(horizontal='center')
+        # ws.merge_cells('A1:A1')
         
         # Записываем данные с заменой 0x1D на маркер
         GS_MARKER = '###GS_MARKER###'
-        for i, line in enumerate(data, 2):
+        for i, line in enumerate(data, 1):
             temp_line = line.replace(chr(0x1D), GS_MARKER)
             ws.cell(row=i, column=1, value=temp_line)
         

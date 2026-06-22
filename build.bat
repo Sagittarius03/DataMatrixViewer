@@ -1,33 +1,31 @@
 @echo off
 echo ========================================
-echo  DataMatrix CSV Viewer - Build Script
+echo  DataMatrix CSV Viewer - Сборка EXE
 echo ========================================
 echo.
 
-:: Проверяем наличие pyinstaller
+REM Активируем виртуальное окружение если есть
+if exist .venv\Scripts\activate (
+    call .venv\Scripts\activate
+)
+
+REM Устанавливаем PyInstaller если не установлен
 pip show pyinstaller > nul 2>&1
 if errorlevel 1 (
-    echo Установка pyinstaller...
+    echo Установка PyInstaller...
     pip install pyinstaller
-    echo.
 )
 
-:: Создаем папку для сборки
-if not exist dist mkdir dist
-
-:: Собираем приложение
+echo.
 echo Сборка приложения...
-pyinstaller --onefile --windowed --name "DataMatrixViewer" --icon=NONE --add-data "logo.py;." main.py
+echo.
 
-if errorlevel 1 (
-    echo.
-    echo [ОШИБКА] Сборка не удалась!
-    pause
-    exit /b 1
-)
+REM Сборка с иконкой
+pyinstaller --onefile --windowed --icon=icon.ico --name="DataMatrixViewer" main.py
 
 echo.
-echo [ГОТОВО] Приложение собрано в папке dist\
-echo Файл: dist\DataMatrixViewer.exe
-echo.
+echo ========================================
+echo  Сборка завершена!
+echo  EXE файл находится в папке dist
+echo ========================================
 pause
