@@ -1,0 +1,10 @@
+**.csv
+**.pyc
+**.pyz
+**.toc
+**.dist
+**.spec
+**.sh
+build/**
+dist/**
+.vscode/**
